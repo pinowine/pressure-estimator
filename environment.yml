@@ -1,0 +1,14 @@
+name: pressure-estimator
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - pydantic
+  - typer
+  - pytest
+  - pip
+  - pip:
+    - onnxruntime

@@ -4,9 +4,12 @@ Version: 0.1.0
 Summary: A lightweight pressure estimation toolkit for Tetris-like games.
 Requires-Python: >=3.10
 License-File: LICENSE
-Requires-Dist: onnxruntime
 Requires-Dist: numpy
 Requires-Dist: pandas
 Requires-Dist: pydantic
 Requires-Dist: typer
+Provides-Extra: cpu
+Requires-Dist: onnxruntime; extra == "cpu"
+Provides-Extra: gpu
+Requires-Dist: onnxruntime-gpu; extra == "gpu"
 Dynamic: license-file

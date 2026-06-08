@@ -9,6 +9,9 @@ dependencies:
   - pydantic
   - typer
   - pytest
+  - scikit-learn
+  - joblib
   - pip
   - pip:
     - onnxruntime-gpu
+    - skl2onnx

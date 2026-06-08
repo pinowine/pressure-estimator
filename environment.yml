@@ -10,5 +10,8 @@ dependencies:
   - typer
   - pytest
   - pip
+  - scikit-learn
+  - joblib
   - pip:
     - onnxruntime
+    - skl2onnx

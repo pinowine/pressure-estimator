@@ -1,5 +1,10 @@
-onnxruntime
 numpy
 pandas
 pydantic
 typer
+
+[cpu]
+onnxruntime
+
+[gpu]
+onnxruntime-gpu

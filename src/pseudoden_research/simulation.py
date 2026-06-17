@@ -16,7 +16,7 @@ from .config import SnakeConfig, TelemetryConfig, WorldConfig
 from .entities import Player, Snake
 from .geometry import Vec2
 from .maps import ObstacleMap
-from .strategies import AStarStrategy, PathDecision, PathStrategy
+from .strategies import AStarStrategy, PathDecision, PathStrategy, make_strategy
 from .telemetry import TelemetryWriter
 from .world import WorldState
 
@@ -165,8 +165,8 @@ class GameSimulation:
         self.telemetry.write(row, dt, force=force)
 
 
-def run_smoke_test(frames: int = 180, dt: float = 1.0 / 60.0) -> dict[str, float]:
-    simulation = GameSimulation()
+def run_smoke_test(frames: int = 180, dt: float = 1.0 / 60.0, strategy_name: str = "astar") -> dict[str, float]:
+    simulation = GameSimulation(strategy=make_strategy(strategy_name))
     try:
         for _ in range(frames):
             simulation.step(Vec2(0.55, 0.25), dt)

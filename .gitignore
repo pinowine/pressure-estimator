@@ -3,6 +3,7 @@ tools
 *.ai
 .vscode
 logs/
+models/*.joblib
 __pycache__/
 *.py[cod]
 .pytest_cache/

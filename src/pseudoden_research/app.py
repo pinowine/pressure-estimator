@@ -8,6 +8,7 @@ from pyglet.window import key
 from .config import TelemetryConfig
 from .geometry import Vec2
 from .simulation import GameSimulation
+from .strategies import make_strategy
 
 
 MIN_WINDOW_WIDTH = 900
@@ -24,7 +25,7 @@ STATUS_LINE_GAP = 4.0
 
 
 class ResearchWindow(pyglet.window.Window):
-    def __init__(self) -> None:
+    def __init__(self, strategy_name: str = "astar") -> None:
         super().__init__(
             width=1440,
             height=810,
@@ -36,6 +37,7 @@ class ResearchWindow(pyglet.window.Window):
         self.keys = key.KeyStateHandler()
         self.push_handlers(self.keys)
         self.simulation = GameSimulation(
+            strategy=make_strategy(strategy_name),
             telemetry_config=TelemetryConfig(enabled=True, directory="logs", interval=0.1)
         )
         self._arena_offset = Vec2()
@@ -372,6 +374,6 @@ class ResearchWindow(pyglet.window.Window):
         return f"{point.x:.1f}, {point.y:.1f}"
 
 
-def run() -> None:
-    ResearchWindow()
+def run(strategy_name: str = "astar") -> None:
+    ResearchWindow(strategy_name)
     pyglet.app.run()

@@ -3,12 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from heapq import heappop, heappush
 from math import hypot
+from pathlib import Path
 from typing import Protocol
 
 from .config import StrategyConfig
 from .entities import Snake
 from .geometry import SQRT_TWO, Vec2, path_distance
 from .world import WorldState
+
+
+MOVE_LABELS = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
 
 
 @dataclass
@@ -29,6 +33,7 @@ class PathStrategy(Protocol):
     def plan(self, world: WorldState, snake: Snake, target: Vec2) -> PathDecision:
         ...
 
+# --- A* AGR START ---
 
 @dataclass
 class AStarStrategy:
@@ -165,3 +170,96 @@ class AStarStrategy:
             path.append(current)
         path.reverse()
         return path
+
+# --- MACHINE LEARNING START ---
+
+@dataclass
+class SklearnIncrementalStrategy:
+    config: StrategyConfig = field(default_factory=lambda: StrategyConfig("ML sklearn SGD"))
+    training_samples: int = 640
+    # the saved model lets later runs continue training instead of starting over
+    model_path: Path = field(default_factory=lambda: Path("models") / "imitation_sgd.joblib")
+    teacher: AStarStrategy = field(default_factory=AStarStrategy)
+    model: object | None = None
+    recompute_count: int = 0
+
+    def plan(self, world: WorldState, snake: Snake, target: Vec2) -> PathDecision:
+        # train lazily on the first planning call, so A* runs do not import sklearn
+        self._fit(world)
+        start = world.nearest_walkable_cell(world.world_to_cell(snake.head))
+        raw_goal = world.world_to_cell(target)
+        # if the live target is inside a wall, train/predict toward the nearest valid cell
+        goal = world.nearest_walkable_cell(raw_goal)
+        if start is None or goal is None:
+            return PathDecision(self.config.algorithm_name, [], [], snake.head.copy(), 0.0, False)
+
+        assert self.model is not None
+        # the model returns a class id; MOVE_LABELS turns that id into a grid step
+        label = int(self.model.predict([self._features(world, start, goal)])[0])  # type: ignore[union-attr]
+        next_cell = self._choose_next_cell(world, start, goal, MOVE_LABELS[label])
+        # this ML planner only commits to one step, then asks the model again next frame
+        cells = [start] if next_cell == start else [start, next_cell]
+        points = [world.cell_to_world(cell) for cell in cells]
+        if next_cell == goal:
+            points[-1] = target.copy() if goal == raw_goal else world.cell_to_world(goal)
+        self.recompute_count += 1
+        return PathDecision(self.config.algorithm_name, cells, points, points[-1].copy(), path_distance(points), True)
+
+    def _fit(self, world: WorldState) -> None:
+        # keep the trained model in memory after the first fit during this run
+        if self.model is not None:
+            return
+        # ↓ normal lightweight format for saving fitted models
+        from joblib import dump, load
+        from sklearn.linear_model import SGDClassifier
+
+        # use only walkable cells so the teacher never labels impossible starts/goals
+        cells = [(col, row) for col in range(world.cols) for row in range(world.rows) if world.is_walkable((col, row))]
+        features: list[list[float]] = []
+        labels: list[int] = []
+        for index in range(min(self.training_samples, len(cells) * 4)):
+            # deterministic sampling keeps experiments repeatable without storing a dataset yet
+            start = cells[(index * 37) % len(cells)]
+            goal = cells[(index * 83 + 19) % len(cells)]
+            # A* gives the full path; the model only learns the first step
+            path = self.teacher._find_path(world, start, goal)
+            if len(path) < 2:
+                continue
+            move = (path[1][0] - start[0], path[1][1] - start[1])
+            if move in MOVE_LABELS:
+                features.append(self._features(world, start, goal))
+                labels.append(MOVE_LABELS.index(move))
+        if self.model_path.exists():
+            self.model = load(self.model_path)
+        else:
+            # SGDClassifier supports partial_fit
+            self.model = SGDClassifier(loss="log_loss", random_state=0, learning_rate="optimal")
+        self.model.partial_fit(features, labels, classes=list(range(len(MOVE_LABELS))))  # type: ignore[attr-defined]
+        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        dump(self.model, self.model_path)
+
+    def _features(self, world: WorldState, start: tuple[int, int], goal: tuple[int, int]) -> list[float]:
+        col, row = start
+        # feature shape: 2 target offsets + 8 nearby walkability bits = 10 values
+        # offsets are normalized so the model sees similar ranges on different map sizes
+        values = [(goal[0] - col) / max(world.cols, 1), (goal[1] - row) / max(world.rows, 1)]
+        values.extend(1.0 if world.is_walkable((col + dc, row + dr)) else 0.0 for dc, dr in MOVE_LABELS)
+        return values
+
+    def _choose_next_cell(
+        self, world: WorldState, start: tuple[int, int], goal: tuple[int, int], predicted_move: tuple[int, int]
+    ) -> tuple[int, int]:
+        neighbors = [neighbor for neighbor, _ in self.teacher._neighbors(world, start)]
+        preferred = (start[0] + predicted_move[0], start[1] + predicted_move[1])
+        if preferred in neighbors:
+            return preferred
+        # if the model predicts a blocked move, fall back to the valid neighbor closest to goal
+        return min(neighbors, key=lambda cell: self.teacher._heuristic(cell, goal), default=start)
+
+# hook
+def make_strategy(name: str) -> PathStrategy:
+    if name == "ml":
+        return SklearnIncrementalStrategy()
+    if name == "astar":
+        return AStarStrategy()
+    raise ValueError(f"Unknown strategy: {name}")

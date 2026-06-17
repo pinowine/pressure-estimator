@@ -19,13 +19,36 @@ def main() -> None:
         action="store_true",
         help="Run a short headless simulation instead of opening the window.",
     )
+    # mode args
     parser.add_argument(
         "--strategy",
         choices=("astar", "ml"),
         default="astar",
         help="Pass strategy to run.",
     )
+    parser.add_argument(
+        "--train-ml",
+        action="store_true",
+        help="Run headless ML training with scripted player control.",
+    )
+    parser.add_argument("--episodes", type=int, default=12, help="Training episodes for --train-ml.")
+    parser.add_argument("--frames", type=int, default=600, help="Frames per episode for --train-ml.")
     args = parser.parse_args()
+
+    # train args
+    if args.train_ml:
+        from pseudoden_research.simulation import run_headless_ml_training
+
+        summary = run_headless_ml_training(episodes=args.episodes, frames=args.frames)
+        print(
+            "Headless ML training complete: "
+            f"episodes={summary['episodes']}, "
+            f"frames={summary['frames']}, "
+            f"caught={summary['caught']}, "
+            f"avg_distance={summary['avg_distance']:.2f}, "
+            f"log={summary['log']}"
+        )
+        return
 
     if args.smoke_test:
         # quick headless check for CI and local sanity runs

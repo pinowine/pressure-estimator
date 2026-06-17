@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -179,3 +180,78 @@ def run_smoke_test(frames: int = 180, dt: float = 1.0 / 60.0, strategy_name: str
         }
     finally:
         simulation.close()
+
+
+def run_headless_ml_training(
+    episodes: int = 12,
+    frames: int = 600,
+    dt: float = 1.0 / 60.0,
+) -> dict[str, object]:
+    episodes = max(1, episodes)
+    frames = max(1, frames)
+    output_path = _headless_log_path()
+    total_distance = 0.0
+    total_caught = 0
+    fieldnames = ["episode", "frames", "avg_distance", "final_distance", "caught", "recomputes"]
+
+    with output_path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        for episode in range(episodes):
+            simulation = GameSimulation(
+                strategy=make_strategy("ml"),
+                telemetry_config=TelemetryConfig(enabled=False),
+                seed=7 + episode,
+            )
+            episode_distance = 0.0
+            episode_caught = 0
+            metrics: SimulationMetrics | None = None
+            try:
+                for frame in range(frames):
+                    # headless
+                    metrics = simulation.step(_scripted_player_input(simulation, frame, episode), dt)
+                    episode_distance += metrics.distance
+                    episode_caught += int(metrics.caught)
+            finally:
+                simulation.close()
+
+            assert metrics is not None
+            avg_distance = episode_distance / max(frames, 1)
+            total_distance += episode_distance
+            total_caught += episode_caught
+            writer.writerow(
+                {
+                    "episode": episode,
+                    "frames": frames,
+                    "avg_distance": f"{avg_distance:.3f}",
+                    "final_distance": f"{metrics.distance:.3f}",
+                    "caught": episode_caught,
+                    "recomputes": metrics.recompute_count,
+                }
+            )
+
+    return {
+        "episodes": episodes,
+        "frames": frames,
+        "avg_distance": total_distance / max(episodes * frames, 1),
+        "caught": total_caught,
+        "log": str(output_path),
+    }
+
+
+def _scripted_player_input(simulation: GameSimulation, frame: int, episode: int) -> Vec2:
+    patterns = (Vec2(1.0, 0.2), Vec2(-0.4, 1.0), Vec2(-1.0, -0.2), Vec2(0.4, -1.0))
+    pattern = patterns[((frame // 120) + episode) % len(patterns)]
+    away = Vec2(
+        simulation.player.pos.x - simulation.snake.head.x,
+        simulation.player.pos.y - simulation.snake.head.y,
+    ).normalized()
+    # mix a repeatable route with a little escape behavior, so episodes are varied but stable
+    return Vec2(pattern.x * 0.55 + away.x * 0.45, pattern.y * 0.55 + away.y * 0.45)
+
+
+def _headless_log_path() -> Path:
+    directory = Path("logs")
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return directory / f"headless_ml_train_{stamp}.csv"

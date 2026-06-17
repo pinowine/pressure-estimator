@@ -1,0 +1,9 @@
+tools
+*.psd
+*.ai
+.vscode
+logs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/

@@ -1,5 +1,0 @@
-onnxruntime
-numpy
-pandas
-pydantic
-typer

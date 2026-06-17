@@ -1,2 +1,0 @@
-[console_scripts]
-pressure = pressure_estimator.cli:app

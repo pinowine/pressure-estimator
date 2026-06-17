@@ -1,0 +1,19 @@
+{
+  "layers": [
+    {
+      "layer": 0,
+      "type": "collision",
+      "source": "collision"
+    },
+    {
+      "layer": 1,
+      "type": "wall",
+      "source": "wall"
+    },
+    {
+      "layer": 2,
+      "type": "bg",
+      "source": "bg"
+    }
+  ]
+}

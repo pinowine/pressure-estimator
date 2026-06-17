@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="assets/favicon.ico">
+  <title>EEAaO</title>
+  <link rel="stylesheet" type="text/css" href="style.css">
+  <script src="libraries/p5.min.js"></script>
+  <!-- <script src="libraries/p5.sound.min.js"></script> -->
+</head>
+
+<body>
+  <!-- Intro Screen -->
+  <div id="intro-overlay">
+    <div class="intro-panel">
+      <h1 class="intro-title">Everyeye Everywhere<br /> All at Once</h1>
+      <p class="intro-subtitle">
+        You are a little eye! <br /> Try to survive and reach the right side of the cave.
+      </p>
+
+      <div class="intro-section">
+        <h2>How to Play</h2>
+        <ul class="intro-list">
+          <li><strong>Move:</strong> Arrow keys / AD</li>
+          <li><strong>Jump:</strong> Spacebar</li>
+        </ul>
+      </div>
+      <button id="btn-start" class="intro-start">Start Game</button>
+      <p id="loading-status" class="intro-loading">Loading assets…</p>
+    </div>
+  </div>
+  <div id="bg-img-wrapper">
+    <img class="bg-img" src="assets/sprites/backgrounds/default_01.png" alt="background">
+  </div>
+
+  <!-- Main Game Canvas -->
+  <div id="canvas-wrapper">
+
+  </div>
+  <script src="components/UI.js"></script>
+  <script src="components/Math.js"></script>
+  <script src="components/World.js"></script>
+  <script src="components/RigidBody.js"></script>
+  <script src="components/Player.js"></script>
+  <script src="components/Pathfinding.js"></script>
+  <script src="components/Hunter.js"></script>
+  <script src="components/SceneManager.js"></script>
+  <!-- <script src="components/Debug.js"></script> -->
+  <script src="sketch.js"></script>
+</body>
+
+</html>

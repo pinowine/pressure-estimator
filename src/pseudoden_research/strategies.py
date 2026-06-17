@@ -39,8 +39,13 @@ class AStarStrategy:
     recompute_count: int = 0
 
     def plan(self, world: WorldState, snake: Snake, target: Vec2) -> PathDecision:
-        start_cell = world.world_to_cell(snake.head)
-        goal_cell = world.world_to_cell(target)
+        start_cell = world.nearest_walkable_cell(world.world_to_cell(snake.head))
+        raw_goal_cell = world.world_to_cell(target)
+        goal_cell = world.nearest_walkable_cell(raw_goal_cell)
+        if start_cell is None or goal_cell is None:
+            return self._empty_decision(snake, recomputed=False)
+
+        path_target = target.copy() if goal_cell == raw_goal_cell else world.cell_to_world(goal_cell)
         # reuse the last path until the target cell or timer changes
         should_recompute = (
             self.last_decision is None
@@ -52,14 +57,13 @@ class AStarStrategy:
             cells = self._find_path(world, start_cell, goal_cell)
             points = [world.cell_to_world(cell) for cell in cells]
             if points:
-                points[-1] = target.copy()
-            else:
-                points = [target.copy()]
+                points[-1] = path_target.copy()
+            decision_target = path_target if points else snake.head.copy()
             self.last_decision = PathDecision(
                 algorithm=self.config.algorithm_name,
                 cells=cells,
                 points=points,
-                target=target.copy(),
+                target=decision_target,
                 path_distance=path_distance(points),
                 recomputed=True,
             )
@@ -71,8 +75,18 @@ class AStarStrategy:
         assert self.last_decision is not None
         self.last_decision.recomputed = False
         # cached decision keeps movement smooth between replans
-        self.last_decision.target = target.copy()
+        self.last_decision.target = path_target.copy()
         return self.last_decision
+
+    def _empty_decision(self, snake: Snake, recomputed: bool) -> PathDecision:
+        return PathDecision(
+            algorithm=self.config.algorithm_name,
+            cells=[],
+            points=[],
+            target=snake.head.copy(),
+            path_distance=0.0,
+            recomputed=recomputed,
+        )
 
     def _find_path(
         self,
@@ -129,6 +143,9 @@ class AStarStrategy:
                 neighbor = (col + dc, row + dr)
                 if not world.is_walkable(neighbor):
                     continue
+                if dc != 0 and dr != 0:
+                    if not world.is_walkable((col + dc, row)) or not world.is_walkable((col, row + dr)):
+                        continue
                 # diagonal moves cost more than straight moves
                 cost = SQRT_TWO if dc != 0 and dr != 0 else 1.0
                 result.append((neighbor, cost))

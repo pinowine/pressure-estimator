@@ -15,6 +15,7 @@ from .behavior import (
 from .config import SnakeConfig, TelemetryConfig, WorldConfig
 from .entities import Player, Snake
 from .geometry import Vec2
+from .maps import ObstacleMap
 from .strategies import AStarStrategy, PathDecision, PathStrategy
 from .telemetry import TelemetryWriter
 from .world import WorldState
@@ -64,11 +65,17 @@ class GameSimulation:
         )
         self.reset_entities()
 
+    @property
+    def current_map(self) -> ObstacleMap:
+        return self.world.obstacle_map
+
     def reset_entities(self) -> None:
         center_y = self.world.height * 0.5
         center_x = self.world.width * 0.5
-        self.player = Player(Vec2(center_x - 100.0, center_y))
-        self.snake = Snake(Vec2(center_x + 100.0, center_y), config=self.snake_config)
+        player_pos = self.world.nearest_walkable_point(Vec2(center_x - 100.0, center_y))
+        snake_pos = self.world.nearest_walkable_point(Vec2(center_x + 100.0, center_y))
+        self.player = Player(player_pos)
+        self.snake = Snake(snake_pos, config=self.snake_config)
         self.snake.facing_dir.set(-1.0, 0.0)
         self.sense = SnakeSense(self.snake_config)
         self.mind = SnakeMind(self.snake_config)

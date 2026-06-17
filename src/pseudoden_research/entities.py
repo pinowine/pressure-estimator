@@ -20,6 +20,7 @@ class Player:
         return self.config.radius
 
     def update(self, input_dir: Vec2, dt: float, world: WorldState) -> None:
+        previous = self.pos.copy()
         direction = input_dir.normalized()
         # acceleration based movement keeps diagonal input fair
         if direction.length() > 0:
@@ -30,6 +31,9 @@ class Player:
 
         self.pos.add_scaled(self.vel, dt)
         self._keep_inside(world)
+        if not world.point_is_walkable(self.pos):
+            self.pos = previous
+            self.vel.set(0.0, 0.0)
         self._update_eye()
 
     def _keep_inside(self, world: WorldState) -> None:
@@ -89,6 +93,7 @@ class Snake:
         self.path_index = 1 if len(self.path_points) > 1 else 0
 
     def update(self, dt: float, target: Vec2, world: WorldState) -> None:
+        previous = self.head.copy()
         move_target = self._current_move_target(target)
         to_target = subtract(move_target, self.head)
         distance = to_target.length()
@@ -103,6 +108,9 @@ class Snake:
             self.facing_dir.set(direction.x, direction.y)
 
         world.clamp_point(self.head, self.body_thickness)
+        if not world.point_is_walkable(self.head):
+            self.head = previous
+            self.vel.set(0.0, 0.0)
         self.trail.append(self.head.copy())
         self._update_segments()
 

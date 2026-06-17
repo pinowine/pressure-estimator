@@ -16,6 +16,7 @@ from pseudoden_research.behavior import SnakeSense
 from pseudoden_research.config import SnakeConfig, TelemetryConfig, WorldConfig
 from pseudoden_research.entities import Player, Snake
 from pseudoden_research.geometry import Vec2
+from pseudoden_research.maps import DEFAULT_OBSTACLE_MAP, ObstacleMap, ObstacleRect
 from pseudoden_research.simulation import GameSimulation
 from pseudoden_research.strategies import AStarStrategy
 from pseudoden_research.world import WorldState
@@ -30,6 +31,25 @@ class ResearchCoreTests(unittest.TestCase):
         self.assertEqual(decision.cells[0], (0, 0))
         self.assertEqual(decision.cells[-1], (4, 4))
         self.assertLessEqual(len(decision.cells), 5)
+
+    def test_astar_routes_around_obstacle_cells(self) -> None:
+        obstacle_map = ObstacleMap(
+            key="unit_wall",
+            name="Unit Wall",
+            test_goal="force a single lower gate",
+            rectangles=(ObstacleRect(2, 0, 1, 4),),
+        )
+        world = WorldState(
+            WorldConfig(width=200, height=200, cell_size=40),
+            obstacle_map=obstacle_map,
+        )
+        snake = Snake(Vec2(20, 20))
+        decision = AStarStrategy().plan(world, snake, Vec2(180, 20))
+
+        self.assertTrue(decision.cells)
+        self.assertTrue(all(cell not in obstacle_map.blocked_cells for cell in decision.cells))
+        self.assertIn((2, 4), decision.cells)
+        self.assertGreater(decision.path_distance, 160.0)
 
     def test_player_moves_diagonally_and_stays_in_bounds(self) -> None:
         world = WorldState(WorldConfig(width=200, height=200, cell_size=40))
@@ -66,6 +86,17 @@ class ResearchCoreTests(unittest.TestCase):
             self.assertGreaterEqual(metrics.decision.path_node_count, 1)
             self.assertEqual(metrics.alert_state, "seen")
             self.assertEqual(metrics.snake_state, "CHASE")
+        finally:
+            simulation.close()
+
+    def test_simulation_uses_single_obstacle_map_cleanly(self) -> None:
+        simulation = GameSimulation(telemetry_config=TelemetryConfig(enabled=False))
+        try:
+            simulation.step(Vec2(1, 0), 1.0 / 60.0)
+
+            self.assertEqual(simulation.current_map, DEFAULT_OBSTACLE_MAP)
+            self.assertTrue(simulation.world.point_is_walkable(simulation.player.pos))
+            self.assertTrue(simulation.world.point_is_walkable(simulation.snake.head))
         finally:
             simulation.close()
 

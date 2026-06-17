@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-
 FIELDNAMES = [
     "timestamp",
     "frame",
@@ -26,7 +25,6 @@ FIELDNAMES = [
     "hearing_range",
     "vision_range",
 ]
-
 
 @dataclass
 class TelemetryWriter:

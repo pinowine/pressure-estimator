@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-import unittest
+import csv
+import os
 import sys
+import tempfile
+import unittest
 from pathlib import Path
 
 
@@ -17,7 +20,7 @@ from pseudoden_research.config import SnakeConfig, TelemetryConfig, WorldConfig
 from pseudoden_research.entities import Player, Snake
 from pseudoden_research.geometry import Vec2
 from pseudoden_research.maps import DEFAULT_OBSTACLE_MAP, ObstacleMap, ObstacleRect
-from pseudoden_research.simulation import GameSimulation
+from pseudoden_research.simulation import GameSimulation, run_headless_ml_training
 from pseudoden_research.strategies import AStarStrategy
 from pseudoden_research.world import WorldState
 
@@ -99,6 +102,24 @@ class ResearchCoreTests(unittest.TestCase):
             self.assertTrue(simulation.world.point_is_walkable(simulation.snake.head))
         finally:
             simulation.close()
+
+    def test_headless_ml_training_writes_model_evaluation(self) -> None:
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.chdir(temp_dir)
+            try:
+                summary = run_headless_ml_training(episodes=1, frames=3)
+                log_path = Path(str(summary["log"]))
+                with log_path.open(newline="", encoding="utf-8") as file:
+                    row = next(csv.DictReader(file))
+
+                self.assertEqual(row["iteration"], "1")
+                self.assertEqual(row["previous_model"], "0")
+                self.assertGreater(int(row["train_samples"]), 0)
+                self.assertGreater(int(row["eval_samples"]), 0)
+                self.assertNotEqual(row["eval_accuracy_after"], "")
+            finally:
+                os.chdir(original_cwd)
 
 
 if __name__ == "__main__":

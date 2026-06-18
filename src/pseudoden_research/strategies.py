@@ -29,6 +29,22 @@ class PathDecision:
         return len(self.points)
 
 
+@dataclass(frozen=True)
+class ModelTrainingReport:
+    previous_model: bool
+    train_samples: int
+    eval_samples: int
+    model_seen_steps_before: int
+    model_seen_steps_after: int
+    train_accuracy_before: float | None
+    train_accuracy_after: float | None
+    eval_accuracy_before: float | None
+    eval_accuracy_after: float | None
+    eval_prediction_changes: int | None
+    eval_prediction_change_rate: float | None
+    model_path: str
+
+
 class PathStrategy(Protocol):
     def plan(self, world: WorldState, snake: Snake, target: Vec2) -> PathDecision:
         ...
@@ -177,11 +193,19 @@ class AStarStrategy:
 class SklearnIncrementalStrategy:
     config: StrategyConfig = field(default_factory=lambda: StrategyConfig("ML sklearn SGD"))
     training_samples: int = 640
+    evaluation_samples: int = 256
+    training_offset: int = 0
     # the saved model lets later runs continue training instead of starting over
     model_path: Path = field(default_factory=lambda: Path("models") / "imitation_sgd.joblib")
     teacher: AStarStrategy = field(default_factory=AStarStrategy)
     model: object | None = None
+    training_report: ModelTrainingReport | None = None
     recompute_count: int = 0
+
+    def prepare_training(self, world: WorldState) -> ModelTrainingReport:
+        self._fit(world)
+        assert self.training_report is not None
+        return self.training_report
 
     def plan(self, world: WorldState, snake: Snake, target: Vec2) -> PathDecision:
         # train lazily on the first planning call, so A* runs do not import sklearn
@@ -209,18 +233,72 @@ class SklearnIncrementalStrategy:
         # keep the trained model in memory after the first fit during this run
         if self.model is not None:
             return
-        # ↓ normal lightweight format for saving fitted models
+        # joblib is the normal lightweight format for saving fitted models
         from joblib import dump, load
         from sklearn.linear_model import SGDClassifier
 
+        features, labels = self._build_teacher_dataset(world, self.training_samples, self.training_offset)
+        # fixed eval data makes different training iterations comparable
+        eval_features, eval_labels = self._build_teacher_dataset(world, self.evaluation_samples, 10000)
+        if not features:
+            raise RuntimeError("ML training needs at least one reachable A* sample.")
+
+        previous_model = self.model_path.exists()
+        if previous_model:
+            self.model = load(self.model_path)
+        else:
+            # SGDClassifier supports partial_fit
+            self.model = SGDClassifier(loss="log_loss", random_state=0, learning_rate="optimal")
+
+        train_before = self._score_model(self.model, features, labels) if previous_model else None
+        eval_before = self._score_model(self.model, eval_features, eval_labels) if previous_model else None
+        eval_predictions_before = self._predict_labels(self.model, eval_features) if previous_model else None
+        seen_steps_before = int(getattr(self.model, "t_", 0) or 0)
+
+        self.model.partial_fit(features, labels, classes=list(range(len(MOVE_LABELS))))  # type: ignore[attr-defined]
+        seen_steps_after = int(getattr(self.model, "t_", 0) or 0)
+        train_after = self._score_model(self.model, features, labels)
+        eval_after = self._score_model(self.model, eval_features, eval_labels)
+        eval_predictions_after = self._predict_labels(self.model, eval_features)
+        eval_changes = self._count_prediction_changes(eval_predictions_before, eval_predictions_after)
+        eval_change_rate = (
+            eval_changes / len(eval_predictions_after)
+            if eval_changes is not None and eval_predictions_after
+            else None
+        )
+
+        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        dump(self.model, self.model_path)
+        self.training_report = ModelTrainingReport(
+            previous_model=previous_model,
+            train_samples=len(features),
+            eval_samples=len(eval_features),
+            model_seen_steps_before=seen_steps_before,
+            model_seen_steps_after=seen_steps_after,
+            train_accuracy_before=train_before,
+            train_accuracy_after=train_after,
+            eval_accuracy_before=eval_before,
+            eval_accuracy_after=eval_after,
+            eval_prediction_changes=eval_changes,
+            eval_prediction_change_rate=eval_change_rate,
+            model_path=str(self.model_path),
+        )
+
+    def _build_teacher_dataset(
+        self,
+        world: WorldState,
+        sample_count: int,
+        offset: int,
+    ) -> tuple[list[list[float]], list[int]]:
         # use only walkable cells so the teacher never labels impossible starts/goals
         cells = [(col, row) for col in range(world.cols) for row in range(world.rows) if world.is_walkable((col, row))]
         features: list[list[float]] = []
         labels: list[int] = []
-        for index in range(min(self.training_samples, len(cells) * 4)):
+        for index in range(min(sample_count, len(cells) * 4)):
             # deterministic sampling keeps experiments repeatable without storing a dataset yet
-            start = cells[(index * 37) % len(cells)]
-            goal = cells[(index * 83 + 19) % len(cells)]
+            sample_index = index + offset
+            start = cells[(sample_index * 37) % len(cells)]
+            goal = cells[(sample_index * 83 + 19) % len(cells)]
             # A* gives the full path; the model only learns the first step
             path = self.teacher._find_path(world, start, goal)
             if len(path) < 2:
@@ -229,14 +307,23 @@ class SklearnIncrementalStrategy:
             if move in MOVE_LABELS:
                 features.append(self._features(world, start, goal))
                 labels.append(MOVE_LABELS.index(move))
-        if self.model_path.exists():
-            self.model = load(self.model_path)
-        else:
-            # SGDClassifier supports partial_fit
-            self.model = SGDClassifier(loss="log_loss", random_state=0, learning_rate="optimal")
-        self.model.partial_fit(features, labels, classes=list(range(len(MOVE_LABELS))))  # type: ignore[attr-defined]
-        self.model_path.parent.mkdir(parents=True, exist_ok=True)
-        dump(self.model, self.model_path)
+        return features, labels
+
+    def _score_model(self, model: object, features: list[list[float]], labels: list[int]) -> float | None:
+        if not features:
+            return None
+        return float(model.score(features, labels))  # type: ignore[attr-defined]
+
+    def _predict_labels(self, model: object, features: list[list[float]]) -> list[int]:
+        if not features:
+            return []
+        return [int(label) for label in model.predict(features)]  # type: ignore[attr-defined]
+
+    def _count_prediction_changes(self, before: list[int] | None, after: list[int]) -> int | None:
+        if before is None:
+            return None
+        # prediction changes show whether this update actually moved the model
+        return sum(1 for left, right in zip(before, after) if left != right)
 
     def _features(self, world: WorldState, start: tuple[int, int], goal: tuple[int, int]) -> list[float]:
         col, row = start

@@ -40,12 +40,15 @@ def main() -> None:
         from pseudoden_research.simulation import run_headless_ml_training
 
         summary = run_headless_ml_training(episodes=args.episodes, frames=args.frames)
+        eval_accuracy = summary["eval_accuracy"]
+        eval_text = f", eval_accuracy={eval_accuracy:.3f}" if isinstance(eval_accuracy, float) else ""
         print(
             "Headless ML training complete: "
             f"episodes={summary['episodes']}, "
             f"frames={summary['frames']}, "
             f"caught={summary['caught']}, "
-            f"avg_distance={summary['avg_distance']:.2f}, "
+            f"avg_distance={summary['avg_distance']:.2f}"
+            f"{eval_text}, "
             f"log={summary['log']}"
         )
         return

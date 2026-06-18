@@ -17,7 +17,14 @@ from .config import SnakeConfig, TelemetryConfig, WorldConfig
 from .entities import Player, Snake
 from .geometry import Vec2
 from .maps import ObstacleMap
-from .strategies import AStarStrategy, PathDecision, PathStrategy, make_strategy
+from .strategies import (
+    AStarStrategy,
+    ModelTrainingReport,
+    PathDecision,
+    PathStrategy,
+    SklearnIncrementalStrategy,
+    make_strategy,
+)
 from .telemetry import TelemetryWriter
 from .world import WorldState
 
@@ -192,14 +199,37 @@ def run_headless_ml_training(
     output_path = _headless_log_path()
     total_distance = 0.0
     total_caught = 0
-    fieldnames = ["episode", "frames", "avg_distance", "final_distance", "caught", "recomputes"]
+    last_training_report: ModelTrainingReport | None = None
+    fieldnames = [
+        "iteration",
+        "episode",
+        "frames",
+        "previous_model",
+        "train_samples",
+        "eval_samples",
+        "model_seen_steps_before",
+        "model_seen_steps_after",
+        "train_accuracy_before",
+        "train_accuracy_after",
+        "eval_accuracy_before",
+        "eval_accuracy_after",
+        "eval_accuracy_delta",
+        "eval_prediction_changes",
+        "eval_prediction_change_rate",
+        "avg_distance",
+        "final_distance",
+        "caught",
+        "recomputes",
+        "model_path",
+    ]
 
     with output_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         for episode in range(episodes):
+            strategy = SklearnIncrementalStrategy(training_offset=episode * 997)
             simulation = GameSimulation(
-                strategy=make_strategy("ml"),
+                strategy=strategy,
                 telemetry_config=TelemetryConfig(enabled=False),
                 seed=7 + episode,
             )
@@ -207,8 +237,10 @@ def run_headless_ml_training(
             episode_caught = 0
             metrics: SimulationMetrics | None = None
             try:
+                training_report = strategy.prepare_training(simulation.world)
+                last_training_report = training_report
                 for frame in range(frames):
-                    # headless
+                    # headless means the script creates input instead of reading the keyboard
                     metrics = simulation.step(_scripted_player_input(simulation, frame, episode), dt)
                     episode_distance += metrics.distance
                     episode_caught += int(metrics.caught)
@@ -219,24 +251,58 @@ def run_headless_ml_training(
             avg_distance = episode_distance / max(frames, 1)
             total_distance += episode_distance
             total_caught += episode_caught
-            writer.writerow(
-                {
-                    "episode": episode,
-                    "frames": frames,
-                    "avg_distance": f"{avg_distance:.3f}",
-                    "final_distance": f"{metrics.distance:.3f}",
-                    "caught": episode_caught,
-                    "recomputes": metrics.recompute_count,
-                }
-            )
+            row = {
+                "iteration": episode + 1,
+                "episode": episode,
+                "frames": frames,
+                "avg_distance": f"{avg_distance:.3f}",
+                "final_distance": f"{metrics.distance:.3f}",
+                "caught": episode_caught,
+                "recomputes": metrics.recompute_count,
+            }
+            row.update(_training_report_row(training_report))
+            writer.writerow(row)
 
     return {
         "episodes": episodes,
         "frames": frames,
         "avg_distance": total_distance / max(episodes * frames, 1),
         "caught": total_caught,
+        "eval_accuracy": None if last_training_report is None else last_training_report.eval_accuracy_after,
         "log": str(output_path),
     }
+
+
+# evaluation
+def _training_report_row(report: ModelTrainingReport) -> dict[str, object]:
+    eval_delta = _optional_delta(report.eval_accuracy_after, report.eval_accuracy_before)
+    return {
+        "previous_model": int(report.previous_model),
+        "train_samples": report.train_samples,
+        "eval_samples": report.eval_samples,
+        "model_seen_steps_before": report.model_seen_steps_before,
+        "model_seen_steps_after": report.model_seen_steps_after,
+        "train_accuracy_before": _format_optional_float(report.train_accuracy_before),
+        "train_accuracy_after": _format_optional_float(report.train_accuracy_after),
+        "eval_accuracy_before": _format_optional_float(report.eval_accuracy_before),
+        "eval_accuracy_after": _format_optional_float(report.eval_accuracy_after),
+        "eval_accuracy_delta": _format_optional_float(eval_delta),
+        "eval_prediction_changes": "" if report.eval_prediction_changes is None else report.eval_prediction_changes,
+        "eval_prediction_change_rate": _format_optional_float(report.eval_prediction_change_rate),
+        "model_path": report.model_path,
+    }
+
+
+def _optional_delta(after: float | None, before: float | None) -> float | None:
+    if after is None or before is None:
+        return None
+    return after - before
+
+
+def _format_optional_float(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{value:.3f}"
 
 
 def _scripted_player_input(simulation: GameSimulation, frame: int, episode: int) -> Vec2:

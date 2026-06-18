@@ -31,9 +31,36 @@ def main() -> None:
         action="store_true",
         help="Run headless ML training with scripted player control.",
     )
-    parser.add_argument("--episodes", type=int, default=12, help="Training episodes for --train-ml.")
-    parser.add_argument("--frames", type=int, default=600, help="Frames per episode for --train-ml.")
+    parser.add_argument(
+        "--tune-ml",
+        action="store_true",
+        help="Run isolated ML tuning candidates and write a parameter result CSV.",
+    )
+    parser.add_argument("--episodes", type=int, default=12, help="Episodes for --train-ml or --tune-ml.")
+    parser.add_argument("--frames", type=int, default=600, help="Frames per episode for --train-ml or --tune-ml.")
+    parser.add_argument("--tune-limit", type=int, default=None, help="Limit how many tuning candidates to run.")
+    parser.add_argument(
+        "--analyze-ml-log",
+        nargs="?",
+        const="latest",
+        default=None,
+        help="Analyze a headless ML training CSV log. Omit the path to use the latest log.",
+    )
     args = parser.parse_args()
+
+    if args.analyze_ml_log is not None:
+        from pseudoden_research.analysis import analyze_ml_training_log, format_ml_training_analysis
+
+        summary = analyze_ml_training_log(None if args.analyze_ml_log == "latest" else args.analyze_ml_log)
+        print(format_ml_training_analysis(summary))
+        return
+
+    if args.tune_ml:
+        from pseudoden_research.tuning import format_ml_tuning_summary, run_ml_tuning
+
+        summary = run_ml_tuning(episodes=args.episodes, frames=args.frames, limit=args.tune_limit)
+        print(format_ml_tuning_summary(summary))
+        return
 
     # train args
     if args.train_ml:

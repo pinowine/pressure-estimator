@@ -204,6 +204,8 @@ def run_headless_ml_training(
         "iteration",
         "episode",
         "frames",
+        "feature_set",
+        "feature_count",
         "previous_model",
         "train_samples",
         "eval_samples",
@@ -216,11 +218,15 @@ def run_headless_ml_training(
         "eval_accuracy_delta",
         "eval_prediction_changes",
         "eval_prediction_change_rate",
+        "best_eval_accuracy_before",
+        "best_eval_accuracy_after",
+        "saved_best_model",
         "avg_distance",
         "final_distance",
         "caught",
         "recomputes",
         "model_path",
+        "best_model_path",
     ]
 
     with output_path.open("w", newline="", encoding="utf-8") as file:
@@ -278,6 +284,8 @@ def _training_report_row(report: ModelTrainingReport) -> dict[str, object]:
     eval_delta = _optional_delta(report.eval_accuracy_after, report.eval_accuracy_before)
     return {
         "previous_model": int(report.previous_model),
+        "feature_set": report.feature_set,
+        "feature_count": report.feature_count,
         "train_samples": report.train_samples,
         "eval_samples": report.eval_samples,
         "model_seen_steps_before": report.model_seen_steps_before,
@@ -289,7 +297,11 @@ def _training_report_row(report: ModelTrainingReport) -> dict[str, object]:
         "eval_accuracy_delta": _format_optional_float(eval_delta),
         "eval_prediction_changes": "" if report.eval_prediction_changes is None else report.eval_prediction_changes,
         "eval_prediction_change_rate": _format_optional_float(report.eval_prediction_change_rate),
+        "best_eval_accuracy_before": _format_optional_float(report.best_eval_accuracy_before),
+        "best_eval_accuracy_after": _format_optional_float(report.best_eval_accuracy_after),
+        "saved_best_model": int(report.saved_best_model),
         "model_path": report.model_path,
+        "best_model_path": report.best_model_path,
     }
 
 

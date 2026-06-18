@@ -4,7 +4,11 @@ tools
 .vscode
 logs/
 models/*.joblib
+models/*.json
+models/**/*.joblib
+models/**/*.json
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+docs/

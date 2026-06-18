@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from heapq import heappop, heappush
 from math import hypot
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from .config import StrategyConfig
 from .entities import Snake
@@ -13,6 +15,7 @@ from .world import WorldState
 
 
 MOVE_LABELS = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
+FEATURE_SET_NAME = "local_geometry_v2"
 
 
 @dataclass
@@ -31,6 +34,8 @@ class PathDecision:
 
 @dataclass(frozen=True)
 class ModelTrainingReport:
+    feature_set: str
+    feature_count: int
     previous_model: bool
     train_samples: int
     eval_samples: int
@@ -42,7 +47,11 @@ class ModelTrainingReport:
     eval_accuracy_after: float | None
     eval_prediction_changes: int | None
     eval_prediction_change_rate: float | None
+    best_eval_accuracy_before: float | None
+    best_eval_accuracy_after: float | None
+    saved_best_model: bool
     model_path: str
+    best_model_path: str
 
 
 class PathStrategy(Protocol):
@@ -192,11 +201,21 @@ class AStarStrategy:
 @dataclass
 class SklearnIncrementalStrategy:
     config: StrategyConfig = field(default_factory=lambda: StrategyConfig("ML sklearn SGD"))
+    feature_set: str = FEATURE_SET_NAME
     training_samples: int = 640
     evaluation_samples: int = 256
     training_offset: int = 0
+    classifier_loss: str = "log_loss"
+    classifier_penalty: str = "l2"
+    classifier_alpha: float = 0.0001
+    classifier_learning_rate: str = "optimal"
+    classifier_eta0: float = 0.01
+    classifier_average: bool = True
+    classifier_random_state: int = 0
     # the saved model lets later runs continue training instead of starting over
     model_path: Path = field(default_factory=lambda: Path("models") / "imitation_sgd.joblib")
+    best_model_path: Path = field(default_factory=lambda: Path("models") / "best_imitation_sgd.joblib")
+    best_metadata_path: Path = field(default_factory=lambda: Path("models") / "best_imitation_sgd.json")
     teacher: AStarStrategy = field(default_factory=AStarStrategy)
     model: object | None = None
     training_report: ModelTrainingReport | None = None
@@ -246,9 +265,11 @@ class SklearnIncrementalStrategy:
         previous_model = self.model_path.exists()
         if previous_model:
             self.model = load(self.model_path)
+            if not self._model_matches_settings(self.model) or not self._model_matches_features(self.model, len(features[0])):
+                previous_model = False
+                self.model = self._new_classifier(SGDClassifier)
         else:
-            # SGDClassifier supports partial_fit
-            self.model = SGDClassifier(loss="log_loss", random_state=0, learning_rate="optimal")
+            self.model = self._new_classifier(SGDClassifier)
 
         train_before = self._score_model(self.model, features, labels) if previous_model else None
         eval_before = self._score_model(self.model, eval_features, eval_labels) if previous_model else None
@@ -266,9 +287,19 @@ class SklearnIncrementalStrategy:
             if eval_changes is not None and eval_predictions_after
             else None
         )
+        best_before = self._read_best_eval_accuracy()
 
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
         dump(self.model, self.model_path)
+        saved_best = self._save_best_model_if_needed(
+            dump=dump,
+            eval_accuracy=eval_after,
+            train_accuracy=train_after,
+            train_samples=len(features),
+            eval_samples=len(eval_features),
+            model_seen_steps=seen_steps_after,
+        )
+        best_after = eval_after if saved_best else best_before
         self.training_report = ModelTrainingReport(
             previous_model=previous_model,
             train_samples=len(features),
@@ -281,8 +312,87 @@ class SklearnIncrementalStrategy:
             eval_accuracy_after=eval_after,
             eval_prediction_changes=eval_changes,
             eval_prediction_change_rate=eval_change_rate,
+            best_eval_accuracy_before=best_before,
+            best_eval_accuracy_after=best_after,
+            saved_best_model=saved_best,
+            feature_set=self.feature_set,
+            feature_count=len(features[0]),
             model_path=str(self.model_path),
+            best_model_path=str(self.best_model_path),
         )
+
+    def _read_best_eval_accuracy(self) -> float | None:
+        if not self.best_metadata_path.exists():
+            return None
+        try:
+            data = json.loads(self.best_metadata_path.read_text(encoding="utf-8"))
+            if data.get("feature_set") != self.feature_set:
+                return None
+            value = data.get("eval_accuracy")
+        except (OSError, json.JSONDecodeError):
+            return None
+        return float(value) if isinstance(value, (int, float)) else None
+
+    def _save_best_model_if_needed(
+        self,
+        dump: Callable[[object, Path], object],
+        eval_accuracy: float | None,
+        train_accuracy: float | None,
+        train_samples: int,
+        eval_samples: int,
+        model_seen_steps: int,
+    ) -> bool:
+        if eval_accuracy is None:
+            return False
+        best_accuracy = self._read_best_eval_accuracy()
+        if best_accuracy is not None and eval_accuracy <= best_accuracy:
+            return False
+
+        self.best_model_path.parent.mkdir(parents=True, exist_ok=True)
+        dump(self.model, self.best_model_path)
+        metadata = {
+            "eval_accuracy": eval_accuracy,
+            "train_accuracy": train_accuracy,
+            "train_samples": train_samples,
+            "eval_samples": eval_samples,
+            "model_seen_steps": model_seen_steps,
+            "feature_set": self.feature_set,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "source_model_path": str(self.model_path),
+            "best_model_path": str(self.best_model_path),
+        }
+        self.best_metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        return True
+
+    def _new_classifier(self, classifier_type: Callable[..., object]) -> object:
+        # SGDClassifier supports partial_fit, so later runs can continue from a saved model
+        return classifier_type(
+            loss=self.classifier_loss,
+            penalty=self.classifier_penalty,
+            alpha=self.classifier_alpha,
+            learning_rate=self.classifier_learning_rate,
+            eta0=self.classifier_eta0,
+            average=self.classifier_average,
+            random_state=self.classifier_random_state,
+        )
+
+    def _model_matches_settings(self, model: object) -> bool:
+        get_params = getattr(model, "get_params", None)
+        if not callable(get_params):
+            return False
+        params = get_params(deep=False)
+        return (
+            params.get("loss") == self.classifier_loss
+            and params.get("penalty") == self.classifier_penalty
+            and params.get("alpha") == self.classifier_alpha
+            and params.get("learning_rate") == self.classifier_learning_rate
+            and params.get("eta0") == self.classifier_eta0
+            and params.get("average") == self.classifier_average
+        )
+
+    def _model_matches_features(self, model: object, feature_count: int) -> bool:
+        saved_count = getattr(model, "n_features_in_", None)
+        return saved_count is None or saved_count == feature_count
 
     def _build_teacher_dataset(
         self,
@@ -327,10 +437,26 @@ class SklearnIncrementalStrategy:
 
     def _features(self, world: WorldState, start: tuple[int, int], goal: tuple[int, int]) -> list[float]:
         col, row = start
-        # feature shape: 2 target offsets + 8 nearby walkability bits = 10 values
-        # offsets are normalized so the model sees similar ranges on different map sizes
-        values = [(goal[0] - col) / max(world.cols, 1), (goal[1] - row) / max(world.rows, 1)]
-        values.extend(1.0 if world.is_walkable((col + dc, row + dr)) else 0.0 for dc, dr in MOVE_LABELS)
+        dx = goal[0] - col
+        dy = goal[1] - row
+        max_span = max(world.cols, world.rows, 1)
+        grid_distance = hypot(dx, dy)
+        # v1 features stay first, so old logs remain easy to compare with v2
+        values = [dx / max(world.cols, 1), dy / max(world.rows, 1)]
+        walkable_bits = [1.0 if world.is_walkable((col + dc, row + dr)) else 0.0 for dc, dr in MOVE_LABELS]
+        values.extend(walkable_bits)
+        neighbors = [neighbor for neighbor, _ in self.teacher._neighbors(world, start)]
+        best_neighbor_distance = min((self.teacher._heuristic(neighbor, goal) for neighbor in neighbors), default=grid_distance)
+        # extra geometry tells the model how far, which direction, and how blocked this local area is
+        values.extend(
+            [
+                grid_distance / max_span,
+                dx / grid_distance if grid_distance else 0.0,
+                dy / grid_distance if grid_distance else 0.0,
+                1.0 - sum(walkable_bits) / max(len(walkable_bits), 1),
+                (grid_distance - best_neighbor_distance) / max_span,
+            ]
+        )
         return values
 
     def _choose_next_cell(

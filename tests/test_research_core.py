@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
 
 from random import Random
 
+from pseudoden_research.analysis import analyze_ml_training_log
 from pseudoden_research.behavior import SnakeSense
 from pseudoden_research.config import SnakeConfig, TelemetryConfig, WorldConfig
 from pseudoden_research.entities import Player, Snake
@@ -22,6 +23,7 @@ from pseudoden_research.geometry import Vec2
 from pseudoden_research.maps import DEFAULT_OBSTACLE_MAP, ObstacleMap, ObstacleRect
 from pseudoden_research.simulation import GameSimulation, run_headless_ml_training
 from pseudoden_research.strategies import AStarStrategy
+from pseudoden_research.tuning import run_ml_tuning
 from pseudoden_research.world import WorldState
 
 
@@ -115,9 +117,40 @@ class ResearchCoreTests(unittest.TestCase):
 
                 self.assertEqual(row["iteration"], "1")
                 self.assertEqual(row["previous_model"], "0")
+                self.assertEqual(row["feature_set"], "local_geometry_v2")
+                self.assertEqual(row["feature_count"], "15")
                 self.assertGreater(int(row["train_samples"]), 0)
                 self.assertGreater(int(row["eval_samples"]), 0)
                 self.assertNotEqual(row["eval_accuracy_after"], "")
+                self.assertEqual(row["saved_best_model"], "1")
+                self.assertTrue(Path(row["best_model_path"]).exists())
+                self.assertTrue(Path("models/best_imitation_sgd.json").exists())
+
+                analysis = analyze_ml_training_log(log_path)
+                self.assertEqual(analysis["rows"], 1)
+                self.assertEqual(analysis["saved_best_count"], 1)
+                self.assertGreater(float(analysis["best_eval_accuracy"]), 0.0)
+                # short smoke logs should not pretend the model is finished
+                self.assertEqual(analysis["training_state"]["state"], "collecting_data")  # type: ignore[index]
+            finally:
+                os.chdir(original_cwd)
+
+    def test_ml_tuning_writes_parameter_results(self) -> None:
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.chdir(temp_dir)
+            try:
+                summary = run_ml_tuning(episodes=1, frames=3, limit=1)
+                log_path = Path(str(summary["log"]))
+                with log_path.open(newline="", encoding="utf-8") as file:
+                    row = next(csv.DictReader(file))
+
+                self.assertEqual(row["candidate"], "baseline_current")
+                self.assertEqual(row["classifier_learning_rate"], "optimal")
+                self.assertEqual(row["feature_set"], "local_geometry_v2")
+                self.assertNotEqual(row["rationale"], "")
+                self.assertNotEqual(row["selection_score"], "")
+                self.assertTrue(Path(row["best_model_path"]).exists())
             finally:
                 os.chdir(original_cwd)
 

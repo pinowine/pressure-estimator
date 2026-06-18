@@ -35,13 +35,21 @@ DEFAULT_CANDIDATES = (
     TuningCandidate(
         name="baseline_current",
         phase="control",
-        rationale="Use the current lightweight default selected after the first stability check.",
+        rationale="Use the current best default selected after the sample-size check.",
+        training_samples=1280,
+    ),
+    TuningCandidate(
+        name="lightweight_average",
+        phase="historical_control",
+        rationale="Keep the previous 640-sample averaged setup as a cost baseline.",
+        training_samples=640,
     ),
     TuningCandidate(
         name="previous_baseline",
         phase="historical_control",
         rationale="Keep the old non-averaged settings as a control for regression checks.",
         classifier_average=False,
+        training_samples=640,
     ),
     TuningCandidate(
         name="average_more_regularized",
@@ -69,9 +77,9 @@ DEFAULT_CANDIDATES = (
     TuningCandidate(
         name="more_samples_average",
         phase="data",
-        rationale="Increase teacher samples after stabilizing updates, so the model sees more path cases.",
+        rationale="Check whether adding even more teacher samples still helps after the 1280-sample default.",
         classifier_average=True,
-        training_samples=1280,
+        training_samples=1920,
     ),
 )
 

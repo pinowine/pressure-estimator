@@ -202,7 +202,7 @@ class AStarStrategy:
 class SklearnIncrementalStrategy:
     config: StrategyConfig = field(default_factory=lambda: StrategyConfig("ML sklearn SGD"))
     feature_set: str = FEATURE_SET_NAME
-    training_samples: int = 640
+    training_samples: int = 1280
     evaluation_samples: int = 256
     training_offset: int = 0
     classifier_loss: str = "log_loss"

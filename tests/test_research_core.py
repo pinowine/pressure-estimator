@@ -21,7 +21,7 @@ from pseudoden_research.config import SnakeConfig, TelemetryConfig, WorldConfig
 from pseudoden_research.entities import Player, Snake
 from pseudoden_research.geometry import Vec2
 from pseudoden_research.maps import DEFAULT_OBSTACLE_MAP, ObstacleMap, ObstacleRect
-from pseudoden_research.simulation import GameSimulation, run_headless_ml_training
+from pseudoden_research.simulation import GameSimulation, run_headless_ml_training, run_strategy_comparison
 from pseudoden_research.strategies import AStarStrategy
 from pseudoden_research.tuning import run_ml_tuning
 from pseudoden_research.world import WorldState
@@ -132,6 +132,21 @@ class ResearchCoreTests(unittest.TestCase):
                 self.assertGreater(float(analysis["best_eval_accuracy"]), 0.0)
                 # short smoke logs should not pretend the model is finished
                 self.assertEqual(analysis["training_state"]["state"], "collecting_data")  # type: ignore[index]
+
+                comparison = run_strategy_comparison(episodes=1, frames=3)
+                comparison_log = Path(str(comparison["log"]))
+                with comparison_log.open(newline="", encoding="utf-8") as file:
+                    comparison_rows = list(csv.DictReader(file))
+                    strategies = {row["strategy"] for row in comparison_rows}
+                self.assertEqual(strategies, {"astar", "ml"})
+                # The comparison log now includes experience-level behavior signals.
+                self.assertIn("teacher_agreement_rate", comparison_rows[0])
+                self.assertIn("move_change_rate", comparison_rows[0])
+                self.assertIn("closing_rate", comparison_rows[0])
+                self.assertIn("mean_distance_improvement", comparison_rows[0])
+                self.assertIn("close_closing_rate", comparison_rows[0])
+                self.assertIn("mid_move_change_rate", comparison_rows[0])
+                self.assertIn("far_teacher_agreement_rate", comparison_rows[0])
             finally:
                 os.chdir(original_cwd)
 

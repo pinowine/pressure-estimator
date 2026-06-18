@@ -212,10 +212,12 @@ class SklearnIncrementalStrategy:
     classifier_eta0: float = 0.01
     classifier_average: bool = True
     classifier_random_state: int = 0
+    training_enabled: bool = True
     # the saved model lets later runs continue training instead of starting over
     model_path: Path = field(default_factory=lambda: Path("models") / "imitation_sgd.joblib")
     best_model_path: Path = field(default_factory=lambda: Path("models") / "best_imitation_sgd.joblib")
     best_metadata_path: Path = field(default_factory=lambda: Path("models") / "best_imitation_sgd.json")
+    predict_model_path: Path | None = None
     teacher: AStarStrategy = field(default_factory=AStarStrategy)
     model: object | None = None
     training_report: ModelTrainingReport | None = None
@@ -254,6 +256,10 @@ class SklearnIncrementalStrategy:
             return
         # joblib is the normal lightweight format for saving fitted models
         from joblib import dump, load
+
+        if not self.training_enabled:
+            self._load_inference_model(world, load)
+            return
         from sklearn.linear_model import SGDClassifier
 
         features, labels = self._build_teacher_dataset(world, self.training_samples, self.training_offset)
@@ -320,6 +326,19 @@ class SklearnIncrementalStrategy:
             model_path=str(self.model_path),
             best_model_path=str(self.best_model_path),
         )
+
+    def _load_inference_model(self, world: WorldState, load: Callable[[Path], object]) -> None:
+        model_path = self.predict_model_path or self.best_model_path
+        if not model_path.exists():
+            model_path = self.model_path
+        if not model_path.exists():
+            raise FileNotFoundError(f"No frozen ML model found at {model_path}")
+
+        model = load(model_path)
+        feature_count = self._feature_count(world)
+        if not self._model_matches_settings(model) or not self._model_matches_features(model, feature_count):
+            raise RuntimeError("Frozen ML model does not match the current feature set or classifier settings.")
+        self.model = model
 
     def _read_best_eval_accuracy(self) -> float | None:
         if not self.best_metadata_path.exists():
@@ -393,6 +412,13 @@ class SklearnIncrementalStrategy:
     def _model_matches_features(self, model: object, feature_count: int) -> bool:
         saved_count = getattr(model, "n_features_in_", None)
         return saved_count is None or saved_count == feature_count
+
+    def _feature_count(self, world: WorldState) -> int:
+        # one sample is enough to detect stale saved models after feature changes
+        cells = [(col, row) for col in range(world.cols) for row in range(world.rows) if world.is_walkable((col, row))]
+        if len(cells) < 2:
+            raise RuntimeError("ML inference needs at least two walkable cells.")
+        return len(self._features(world, cells[0], cells[-1]))
 
     def _build_teacher_dataset(
         self,

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from random import Random
+from statistics import mean
 
 from .behavior import (
     Personality,
@@ -37,9 +38,36 @@ class SimulationMetrics:
     distance: float
     caught: bool
     decision: PathDecision
+    player_pos: Vec2
+    snake_pos: Vec2
+    target: Vec2 | None
     recompute_count: int
     snake_state: str
     alert_state: str
+
+
+@dataclass
+class ExperienceStats:
+    frames: int = 0
+    teacher_matches: int = 0
+    teacher_checks: int = 0
+    move_changes: int = 0
+    valid_moves: int = 0
+    unique_moves: set[tuple[int, int]] = field(default_factory=set)
+    closing_frames: int = 0
+    distance_improvement_total: float = 0.0
+    distance_improvement_count: int = 0
+    previous_move: tuple[int, int] | None = None
+
+
+EXPERIENCE_FIELDS = (
+    "teacher_agreement_rate",
+    "move_change_rate",
+    "unique_move_count",
+    "closing_rate",
+    "mean_distance_improvement",
+)
+EXPERIENCE_BANDS = (("close", 300.0), ("mid", 600.0), ("far", float("inf")))
 
 
 @dataclass
@@ -129,6 +157,9 @@ class GameSimulation:
             distance=distance,
             caught=caught,
             decision=decision,
+            player_pos=self.player.pos.copy(),
+            snake_pos=self.snake.head.copy(),
+            target=target.copy() if target else None,
             recompute_count=getattr(self.strategy, "recompute_count", 0),
             snake_state=self.mind.state,
             alert_state=self.sense.alert_state,
@@ -279,6 +310,244 @@ def run_headless_ml_training(
     }
 
 
+def run_strategy_comparison(
+    episodes: int = 20,
+    frames: int = 600,
+    dt: float = 1.0 / 60.0,
+) -> dict[str, object]:
+    episodes = max(1, episodes)
+    frames = max(1, frames)
+    output_path = _comparison_log_path()
+    rows: list[dict[str, object]] = []
+    fieldnames = [
+        "strategy",
+        "episode",
+        "frames",
+        "avg_distance",
+        "final_distance",
+        "caught",
+        "first_capture_frame",
+        "recomputes",
+        "avg_path_nodes",
+        "avg_path_distance",
+        *EXPERIENCE_FIELDS,
+        *[
+            f"{band}_{field}"
+            for band, _ in EXPERIENCE_BANDS
+            for field in ("frames", *EXPERIENCE_FIELDS)
+        ],
+    ]
+
+    with output_path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        for episode in range(episodes):
+            for strategy_name in ("astar", "ml"):
+                row = _run_comparison_episode(strategy_name, episode, frames, dt)
+                writer.writerow(row)
+                rows.append(row)
+
+    return {
+        "episodes": episodes,
+        "frames": frames,
+        "log": str(output_path),
+        "strategies": _comparison_summary(rows),
+    }
+
+
+def _run_comparison_episode(strategy_name: str, episode: int, frames: int, dt: float) -> dict[str, object]:
+    simulation = GameSimulation(
+        strategy=_comparison_strategy(strategy_name),
+        telemetry_config=TelemetryConfig(enabled=False),
+        seed=7 + episode,
+    )
+    distance_total = 0.0
+    caught_total = 0
+    first_capture_frame = ""
+    path_nodes_total = 0.0
+    path_distance_total = 0.0
+    teacher = AStarStrategy()
+    experience = ExperienceStats()
+    band_experience = {band: ExperienceStats() for band, _ in EXPERIENCE_BANDS}
+    previous_distance: float | None = None
+    metrics: SimulationMetrics | None = None
+    try:
+        for frame in range(frames):
+            metrics = simulation.step(_fixed_comparison_input(frame, episode), dt)
+            distance_total += metrics.distance
+            caught_total += int(metrics.caught)
+            path_nodes_total += metrics.decision.path_node_count
+            path_distance_total += metrics.decision.path_distance
+            if metrics.caught and first_capture_frame == "":
+                first_capture_frame = metrics.frame
+            # these experience signals describe how the strategy feels, not raw CPU cost
+            move = _decision_move(metrics.decision)
+            teacher_move = _teacher_move(simulation.world, metrics.decision, metrics.target, teacher)
+            improvement = None
+            if previous_distance is not None:
+                improvement = previous_distance - metrics.distance
+            _record_experience(experience, move, teacher_move, improvement)
+            _record_experience(band_experience[_distance_band(metrics.distance)], move, teacher_move, improvement)
+            previous_distance = metrics.distance
+    finally:
+        simulation.close()
+
+    assert metrics is not None
+    row = {
+        "strategy": strategy_name,
+        "episode": episode,
+        "frames": frames,
+        "avg_distance": f"{distance_total / frames:.3f}",
+        "final_distance": f"{metrics.distance:.3f}",
+        "caught": caught_total,
+        "first_capture_frame": first_capture_frame,
+        "recomputes": metrics.recompute_count,
+        "avg_path_nodes": f"{path_nodes_total / frames:.3f}",
+        "avg_path_distance": f"{path_distance_total / frames:.3f}",
+    }
+    row.update(_experience_row(experience))
+    for band, _ in EXPERIENCE_BANDS:
+        row.update(_experience_row(band_experience[band], prefix=f"{band}_", include_frames=True))
+    return row
+
+
+def _comparison_strategy(name: str) -> PathStrategy:
+    if name == "astar":
+        return AStarStrategy()
+    if name == "ml":
+        return SklearnIncrementalStrategy(training_enabled=False)
+    raise ValueError(f"Unknown comparison strategy: {name}")
+
+
+def _comparison_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    summaries: list[dict[str, object]] = []
+    for strategy_name in ("astar", "ml"):
+        strategy_rows = [row for row in rows if row["strategy"] == strategy_name]
+        if not strategy_rows:
+            continue
+        summaries.append(
+            {
+                "strategy": strategy_name,
+                "mean_avg_distance": mean(float(row["avg_distance"]) for row in strategy_rows),
+                "caught_total": sum(int(row["caught"]) for row in strategy_rows),
+                "mean_recomputes": mean(float(row["recomputes"]) for row in strategy_rows),
+                "mean_path_nodes": mean(float(row["avg_path_nodes"]) for row in strategy_rows),
+                "mean_path_distance": mean(float(row["avg_path_distance"]) for row in strategy_rows),
+                "mean_teacher_agreement": mean(float(row["teacher_agreement_rate"]) for row in strategy_rows),
+                "mean_move_change_rate": mean(float(row["move_change_rate"]) for row in strategy_rows),
+                "mean_unique_move_count": mean(float(row["unique_move_count"]) for row in strategy_rows),
+                "mean_closing_rate": mean(float(row["closing_rate"]) for row in strategy_rows),
+                "mean_distance_improvement": mean(float(row["mean_distance_improvement"]) for row in strategy_rows),
+                "close_teacher_agreement": _weighted_mean(strategy_rows, "close_teacher_agreement_rate", "close_frames"),
+                "mid_teacher_agreement": _weighted_mean(strategy_rows, "mid_teacher_agreement_rate", "mid_frames"),
+                "far_teacher_agreement": _weighted_mean(strategy_rows, "far_teacher_agreement_rate", "far_frames"),
+                "close_closing_rate": _weighted_mean(strategy_rows, "close_closing_rate", "close_frames"),
+                "mid_closing_rate": _weighted_mean(strategy_rows, "mid_closing_rate", "mid_frames"),
+                "far_closing_rate": _weighted_mean(strategy_rows, "far_closing_rate", "far_frames"),
+                "close_move_change_rate": _weighted_mean(strategy_rows, "close_move_change_rate", "close_frames"),
+                "mid_move_change_rate": _weighted_mean(strategy_rows, "mid_move_change_rate", "mid_frames"),
+                "far_move_change_rate": _weighted_mean(strategy_rows, "far_move_change_rate", "far_frames"),
+            }
+        )
+    return summaries
+
+
+def _record_experience(
+    stats: ExperienceStats,
+    move: tuple[int, int] | None,
+    teacher_move: tuple[int, int] | None,
+    distance_improvement: float | None,
+) -> None:
+    stats.frames += 1
+    if move is not None:
+        stats.unique_moves.add(move)
+        if stats.previous_move is not None and move != stats.previous_move:
+            stats.move_changes += 1
+        stats.previous_move = move
+        stats.valid_moves += 1
+    if move is not None and teacher_move is not None:
+        stats.teacher_checks += 1
+        stats.teacher_matches += int(move == teacher_move)
+    if distance_improvement is not None:
+        stats.distance_improvement_total += distance_improvement
+        stats.distance_improvement_count += 1
+        if distance_improvement > 0:
+            stats.closing_frames += 1
+
+
+def _experience_row(
+    stats: ExperienceStats,
+    prefix: str = "",
+    include_frames: bool = False,
+) -> dict[str, object]:
+    row: dict[str, object] = {}
+    if include_frames:
+        row[f"{prefix}frames"] = stats.frames
+    row.update(
+        {
+            f"{prefix}teacher_agreement_rate": f"{_safe_rate(stats.teacher_matches, stats.teacher_checks):.3f}",
+            f"{prefix}move_change_rate": f"{_safe_rate(stats.move_changes, max(stats.valid_moves - 1, 0)):.3f}",
+            f"{prefix}unique_move_count": len(stats.unique_moves),
+            f"{prefix}closing_rate": f"{_safe_rate(stats.closing_frames, stats.distance_improvement_count):.3f}",
+            f"{prefix}mean_distance_improvement": (
+                f"{_safe_mean(stats.distance_improvement_total, stats.distance_improvement_count):.3f}"
+            ),
+        }
+    )
+    return row
+
+
+def _distance_band(distance: float) -> str:
+    # fixed bands make repeated comparison logs easy to read together
+    for band, upper_bound in EXPERIENCE_BANDS:
+        if distance <= upper_bound:
+            return band
+    return "far"
+
+
+def _weighted_mean(rows: list[dict[str, object]], value_key: str, weight_key: str) -> float:
+    total_weight = sum(float(row[weight_key]) for row in rows)
+    if total_weight <= 0:
+        return 0.0
+    return sum(float(row[value_key]) * float(row[weight_key]) for row in rows) / total_weight
+
+
+def _decision_move(decision: PathDecision) -> tuple[int, int] | None:
+    # the first grid step is the visible intention for this frame
+    if len(decision.cells) < 2:
+        return None
+    start, next_cell = decision.cells[0], decision.cells[1]
+    return next_cell[0] - start[0], next_cell[1] - start[1]
+
+
+def _teacher_move(
+    world: WorldState,
+    decision: PathDecision,
+    target: Vec2 | None,
+    teacher: AStarStrategy,
+) -> tuple[int, int] | None:
+    # A* is used here as a stable teacher, so accuracy means: "same first choice"
+    if target is None or not decision.cells:
+        return None
+    start = decision.cells[0]
+    goal = world.nearest_walkable_cell(world.world_to_cell(target))
+    if goal is None:
+        return None
+    path = teacher._find_path(world, start, goal)
+    if len(path) < 2:
+        return None
+    return path[1][0] - start[0], path[1][1] - start[1]
+
+
+def _safe_rate(count: int, total: int) -> float:
+    # short smoke tests can have no valid denominator yet
+    return count / total if total > 0 else 0.0
+
+
+def _safe_mean(total: float, count: int) -> float:
+    return total / count if count > 0 else 0.0
+
+
 # evaluation
 def _training_report_row(report: ModelTrainingReport) -> dict[str, object]:
     eval_delta = _optional_delta(report.eval_accuracy_after, report.eval_accuracy_before)
@@ -328,8 +597,21 @@ def _scripted_player_input(simulation: GameSimulation, frame: int, episode: int)
     return Vec2(pattern.x * 0.55 + away.x * 0.45, pattern.y * 0.55 + away.y * 0.45)
 
 
+def _fixed_comparison_input(frame: int, episode: int) -> Vec2:
+    patterns = (Vec2(1.0, 0.2), Vec2(-0.4, 1.0), Vec2(-1.0, -0.2), Vec2(0.4, -1.0))
+    # fixed input keeps both strategies facing the same player route
+    return patterns[((frame // 120) + episode) % len(patterns)]
+
+
 def _headless_log_path() -> Path:
     directory = Path("logs")
     directory.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     return directory / f"headless_ml_train_{stamp}.csv"
+
+
+def _comparison_log_path() -> Path:
+    directory = Path("logs")
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return directory / f"strategy_comparison_{stamp}.csv"

@@ -1,8 +1,12 @@
 tools
 *.psd
 *.ai
+.DS_Store
 .vscode
 logs/
+reports/
+docs/
+README_TMP.md
 models/*.joblib
 models/*.json
 models/**/*.joblib
@@ -11,4 +15,4 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
-docs/
+.vscode/
